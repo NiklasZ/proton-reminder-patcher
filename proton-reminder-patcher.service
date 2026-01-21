@@ -1,0 +1,22 @@
+[Unit]
+Description=proton-reminder-patcher.service
+After=proton-mail-bridge.service
+Requires=proton-mail-bridge.service
+
+[Service]
+ExecStart=/bin/bash -c "source .envrc && /home/niklasz/Desktop/proton-reminder-patcher/.venv/bin/python mail_patcher.py"
+WorkingDirectory=/home/niklasz/Desktop/proton-reminder-patcher
+Restart=always
+RestartSec=5
+User=niklasz
+Group=niklasz
+Environment="PYTHONUNBUFFERED=1"
+
+# Wait for bridge to be fully ready
+ExecStartPre=/bin/sleep 10
+
+StandardOutput=append:/var/log/proton-reminder-patcher.log
+StandardError=append:/var/log/proton-reminder-patcher_error.log
+
+[Install]
+WantedBy=multi-user.target

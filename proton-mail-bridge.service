@@ -1,0 +1,17 @@
+[Unit]
+Description=Proton Mail Bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/protonmail-bridge --noninteractive
+Restart=always
+RestartSec=5
+User=niklasz
+Group=niklasz
+StandardOutput=append:/var/log/protonmail-bridge.log
+StandardError=append:/var/log/protonmail-bridge_error.log
+
+[Install]
+WantedBy=multi-user.target
