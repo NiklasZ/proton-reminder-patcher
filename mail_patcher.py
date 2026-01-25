@@ -233,6 +233,7 @@ def fetch_recent_calendar_emails(
 def extract_event_datetime(email: MailMessage) -> datetime | None:
     """
     Extract datetime from calendar reminder email subjects.
+    Supports both 12-hour (AM/PM) and 24-hour formats.
 
     Args:
         email: MailMessage object with 'subject' and 'headers["date"]' attributes
@@ -246,24 +247,29 @@ def extract_event_datetime(email: MailMessage) -> datetime | None:
     # Parse the email date to get reference year
     email_date = parsedate_to_datetime(email_date_str)
 
-    # Pattern for timed events: "at HH:MM AM/PM (GMT+X) on DayOfWeek, Month Day"
-    timed_pattern = (
+    # Pattern for 12-hour events: "at HH:MM AM/PM (GMT+X) on DayOfWeek, Month Day"
+    timed_12h_pattern = (
         r"at (\d{1,2}):(\d{2}) (AM|PM) \(GMT([+-]\d+)\) on \w+, (\w+) (\d{1,2})"
     )
+
+    # Pattern for 24-hour events: "at HH:MM (GMT+X) on DayOfWeek, Month Day"
+    # Matches: "at 16:30 (GMT+1) on Sunday, January 25"
+    timed_24h_pattern = r"at (\d{1,2}):(\d{2}) \(GMT([+-]\d+)\) on \w+, (\w+) (\d{1,2})"
 
     # Pattern for all-day events: "on DayOfWeek, Month Day (all day)"
     allday_pattern = r"on \w+, (\w+) (\d{1,2}) \(all day\)"
 
-    timed_match = re.search(timed_pattern, subject)
+    timed_12h_match = re.search(timed_12h_pattern, subject)
+    timed_24h_match = re.search(timed_24h_pattern, subject)
     allday_match = re.search(allday_pattern, subject)
 
-    if timed_match:
-        hour = int(timed_match.group(1))
-        minute = int(timed_match.group(2))
-        am_pm = timed_match.group(3)
-        tz_offset = int(timed_match.group(4))
-        month_name = timed_match.group(5)
-        day = int(timed_match.group(6))
+    if timed_12h_match:
+        hour = int(timed_12h_match.group(1))
+        minute = int(timed_12h_match.group(2))
+        am_pm = timed_12h_match.group(3)
+        tz_offset = int(timed_12h_match.group(4))
+        month_name = timed_12h_match.group(5)
+        day = int(timed_12h_match.group(6))
 
         # Convert 12-hour to 24-hour format
         if am_pm == "PM" and hour != 12:
@@ -271,34 +277,46 @@ def extract_event_datetime(email: MailMessage) -> datetime | None:
         elif am_pm == "AM" and hour == 12:
             hour = 0
 
-        # Determine year - start with email year
-        year = email_date.year
-        tz = timezone(timedelta(hours=tz_offset))
-        month_num = datetime.strptime(month_name, "%B").month
+        return create_event_datetime(
+            year=email_date.year,
+            month_name=month_name,
+            day=day,
+            hour=hour,
+            minute=minute,
+            tz_offset=tz_offset,
+            email_date=email_date,
+        )
 
-        event_dt = datetime(year, month_num, day, hour, minute, tzinfo=tz)
+    elif timed_24h_match:
+        hour = int(timed_24h_match.group(1))
+        minute = int(timed_24h_match.group(2))
+        # Group indices shift because (AM|PM) is missing
+        tz_offset = int(timed_24h_match.group(3))
+        month_name = timed_24h_match.group(4)
+        day = int(timed_24h_match.group(5))
 
-        # If event is before email date, it must be next year
-        if event_dt < email_date:
-            year += 1
-            event_dt = datetime(year, month_num, day, hour, minute, tzinfo=tz)
-
-        return event_dt
+        return create_event_datetime(
+            year=email_date.year,
+            month_name=month_name,
+            day=day,
+            hour=hour,
+            minute=minute,
+            tz_offset=tz_offset,
+            email_date=email_date,
+        )
 
     elif allday_match:
         month_name = allday_match.group(1)
         day = int(allday_match.group(2))
 
-        # Determine year
-        year = email_date.year
-        month_num = datetime.strptime(month_name, "%B").month
-
-        # Use the same timezone as email_date
+        # Use the same timezone as email_date for all-day events
         tz = email_date.tzinfo if email_date.tzinfo else timezone.utc
 
+        # Logic for all-day event creation (simplified inline here or via helper)
+        year = email_date.year
+        month_num = datetime.strptime(month_name, "%B").month
         event_dt = datetime(year, month_num, day, 0, 0, tzinfo=tz)
 
-        # If event is before email date, it must be next year
         if event_dt < email_date:
             year += 1
             event_dt = datetime(year, month_num, day, 0, 0, tzinfo=tz)
@@ -308,6 +326,21 @@ def extract_event_datetime(email: MailMessage) -> datetime | None:
     else:
         logger.error(f"Could not parse reminder subject: {subject}")
         return None
+
+
+def create_event_datetime(year, month_name, day, hour, minute, tz_offset, email_date):
+    """Helper to construct the datetime object and handle year rollover."""
+    tz = timezone(timedelta(hours=tz_offset))
+    month_num = datetime.strptime(month_name, "%B").month
+
+    event_dt = datetime(year, month_num, day, hour, minute, tzinfo=tz)
+
+    # If event is before email date, it must be next year
+    if event_dt < email_date:
+        year += 1
+        event_dt = datetime(year, month_num, day, hour, minute, tzinfo=tz)
+
+    return event_dt
 
 
 def send_reminder_email(event: Event, event_dt: datetime) -> str | None:
