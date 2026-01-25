@@ -4,12 +4,12 @@ They largely do this because they claim to be unable to see user calendars as th
 
 **Before**
 <p align="center">
-  <img src="doc/before.png" alt="cat" style="max-width: 100%; width: 50%;"/>
+  <img src="doc/before.png" alt="cat" style="max-width: 100%; width: 80%;"/>
 </p>
 
 **After**
 <p align="center">
-  <img src="doc/after.png" alt="cat" style="max-width: 100%; width: 50%;"/>
+  <img src="doc/after.png" alt="cat" style="max-width: 100%; width: 80%;"/>
 </p>
 
 The fix here is rather ugly, but also relatively durable as we're just using the proton bridge + standard IMAP & SMTP e-mail APIs:
