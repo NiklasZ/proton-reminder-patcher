@@ -12,7 +12,7 @@ from time import monotonic, sleep
 import requests
 from dateutil.rrule import rrulestr
 from ics import Calendar, Event
-from imap_tools import AND, H, MailBoxStartTls, MailMessage
+from imap_tools import AND, MailBoxStartTls, MailMessage
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -123,7 +123,7 @@ def get_calendars(calendar_urls: dict[str, str], cache_for_min: int = 10) -> Cal
         session = requests.Session()
         merged_calendar = Calendar()
 
-        logger.info(f"Downloading calendars: {list(calendar_urls.keys())}...")
+        logger.debug(f"Downloading calendars: {list(calendar_urls.keys())}...")
         for name, url in calendar_urls.items():
             resp = session.get(url, timeout=30)
             resp.raise_for_status()
@@ -379,17 +379,6 @@ def send_reminder_email(event: Event, event_dt: datetime) -> str | None:
         return None
 
 
-def set_sent_folder(mailbox: MailBoxStartTls):
-    """Finds and sets the Sent folder based on its attributes."""
-    for f in mailbox.folder.list():
-        if "\\Sent" in f.flags:
-            mailbox.folder.set(f.name)
-            logger.info(f"Switched to Sent folder: '{f.name}'")
-            return
-
-    raise ValueError("No folder with '\\Sent' flag found.")
-
-
 def scan_inbox(ics_url_names: dict[str, str], recent_minutes: int = 20) -> None:
     """Scan inbox for calendar reminders and send formatted reminder emails.
 
@@ -399,13 +388,12 @@ def scan_inbox(ics_url_names: dict[str, str], recent_minutes: int = 20) -> None:
     with MailBoxStartTls(EMAIL_SERVER_ADDRESS, IMAP_SERVER_PORT).login(
         EMAIL_USERNAME, EMAIL_PASSWORD, "INBOX"
     ) as mailbox:
-        logger.info("Connected to IMAP server with IDLE support")
+        logger.debug("Connected to INBOX via IMAP")
 
         # Fetch emails and calendars
         initial_emails = fetch_recent_calendar_emails(mailbox, minutes=recent_minutes)
         upcoming_events = get_calendars(ics_url_names)
         seen_dates = set()
-        sent_message_ids = []
 
         for email in initial_emails:
             logger.info(f"Checking recent e-mail {email.uid}...")
@@ -427,36 +415,58 @@ def scan_inbox(ics_url_names: dict[str, str], recent_minutes: int = 20) -> None:
                 if message_id:
                     mailbox.move(email.uid, "Trash")
                     logger.info(f"Moved original email (UID: {email.uid}) to Trash")
-                    sent_message_ids.append(message_id)
             else:
                 logger.error(f"No matching event found for reminder at {event_dt}")
 
-        # Clean up sent emails from Sent folder
-        if sent_message_ids:
-            try:
-                set_sent_folder(mailbox)
-                for msg_id in sent_message_ids:
-                    # Search specifically by Header Message-ID
-                    found_msgs = mailbox.fetch(AND(header=H("message-id", msg_id)))
-                    for sent_email in found_msgs:
-                        mailbox.move(sent_email.uid, "Trash")
-                        logger.info(f"Moved sent copy {msg_id} to Trash")
 
-            except Exception as e:
-                logger.error(f"Error cleaning up sent folder: {e}")
+# For debugging
+def list_known_folders():
+    # Use your existing connection logic
+    with MailBoxStartTls(EMAIL_SERVER_ADDRESS, IMAP_SERVER_PORT).login(
+        EMAIL_USERNAME, EMAIL_PASSWORD
+    ) as mailbox:
+        print("Listing all folders:")
+        for folder in mailbox.folder.list():
+            print(f"- {folder.name} (Flags: {folder.flags})")
+
+
+def clean_sent_folder():
+    """Deletes sent reminder e-mails"""
+    with MailBoxStartTls(EMAIL_SERVER_ADDRESS, IMAP_SERVER_PORT).login(
+        EMAIL_USERNAME, EMAIL_PASSWORD, "Sent"
+    ) as mailbox:
+        logger.debug("Connected to SENT folder via IMAP")
+        cutoff_dt = datetime.now(timezone.utc) - timedelta(days=200)
+        criteria = AND(from_=SENDER_EMAIL, date_gte=cutoff_dt.date())
+
+        emails = []
+        for msg in mailbox.fetch(criteria):
+            # msg.date is typically timezone-aware, so we compare strictly
+            if msg.subject.startswith("Reminder:"):
+                mailbox.move(msg.uid, "Trash")
+                logger.info(f"Moved old sent reminder email (UID: {msg.uid}) to Trash")
+            else:
+                logger.error(
+                    f"Unexpected non-reminder email in Sent folder from {SENDER_EMAIL}: {msg.subject}"
+                )
+
+    return emails
 
 
 if __name__ == "__main__":
     ics_url_names = read_json(ICS_CONFIG_PATH)
+    # list_known_folders()
     # Catch up on the last 7 days initially
     last_7_days = 60 * 24 * 7
     scan_inbox(ics_url_names, recent_minutes=last_7_days)
+    clean_sent_folder()
 
     # Check inbox periodically
     refresh_interval = 60  # seconds
     while True:
         try:
             scan_inbox(ics_url_names)
+            clean_sent_folder()
         except Exception as e:
             logger.error(f"Error in scan_inbox: {e}")
         sleep(refresh_interval)
